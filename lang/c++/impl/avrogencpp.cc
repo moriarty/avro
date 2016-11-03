@@ -80,6 +80,7 @@ class CodeGen {
     const std::string headerFile_;
     const std::string includePrefix_;
     const bool noUnion_;
+    const bool withEnumNS_;
     const std::string guardString_;
     boost::mt19937 random_;
 
@@ -108,11 +109,11 @@ public:
     CodeGen(std::ostream& os, const std::string& ns,
         const std::string& schemaFile, const std::string& headerFile,
         const std::string& guardString,
-        const std::string& includePrefix, bool noUnion) :
+        const std::string& includePrefix, bool noUnion, bool withEnumNS) :
         unionNumber_(0), os_(os), inNamespace_(false), ns_(ns),
         schemaFile_(schemaFile), headerFile_(headerFile),
         includePrefix_(includePrefix), noUnion_(noUnion),
-        guardString_(guardString),
+        withEnumNS_(withEnumNS), guardString_(guardString),
         random_(static_cast<uint32_t>(::time(0))) { }
     void generate(const ValidSchema& schema);
 };
@@ -132,14 +133,21 @@ string CodeGen::generateEnumType(const NodePtr& n)
     string s = decorate(n->name());
     string type_guard = guard(s);
     os_ << "#ifndef " << type_guard << "\n";
-
+    if(withEnumNS_){
+        os_ << "namespace " << s << " {\n  ";
+    }
     os_ << "enum " << s << " {\n";
     size_t c = n->names();
     for (size_t i = 0; i < c; ++i) {
         os_ << "    " << n->nameAt(i) << ",\n";
     }
-    os_ << "};\n"
-        << "#endif\n\n";
+    if(withEnumNS_){
+        os_ << "  };\n"
+            << "}\n";
+    } else {
+        os_ << "};\n";
+    }
+    os_ << "#endif\n\n";
     return s;
 }
 
@@ -243,6 +251,8 @@ string CodeGen::generateRecordType(const NodePtr& n)
     for (size_t i = 0; i < c; ++i) {
         if (! noUnion_ && n->leafAt(i)->type() == avro::AVRO_UNION) {
             os_ << "    " << n->nameAt(i) << "_t";
+        } else if (withEnumNS_ && n->leafAt(i)->type() == avro::AVRO_ENUM) {
+            os_ << "    " << types[i] << "::" << types[i];
         } else {
             os_ << "    " << types[i];
         }
@@ -258,6 +268,8 @@ string CodeGen::generateRecordType(const NodePtr& n)
         os_ << "        " << n->nameAt(i) << "(";
         if (! noUnion_ && n->leafAt(i)->type() == avro::AVRO_UNION) {
             os_ << n->nameAt(i) << "_t";
+        } else if (withEnumNS_ && n->leafAt(i)->type() == avro::AVRO_ENUM) {
+            os_ << "    " << types[i] << "::" << types[i];
         } else {
             os_ << types[i];
         }
@@ -486,21 +498,42 @@ void CodeGen::generateEnumTraits(const NodePtr& n)
 {
 	string dname = decorate(n->name());
 	string fn = fullname(dname);
+	if (withEnumNS_) {
+		fn += "::";
+		fn += dname;
+	}
 	size_t c = n->names();
-	string first; 
-	string last;
+	string first = ""; 
+	string last  = "";
 	if (!ns_.empty())
 	{
-		first = ns_;
+		first += ns_;
 		first += "::";
+		if (withEnumNS_) {
+			first += dname;
+			first += "::";
+		}
 		first += n->nameAt(0);
 
-		last = ns_;
+		last += ns_;
 		last += "::";
+		if (withEnumNS_) {
+			last += dname;
+			last += "::";
+		}
 		last += n->nameAt(c-1);
 	} else {
-		first = n->nameAt(0);
-		last = n->nameAt(c-1);
+		if (withEnumNS_) {
+ 			first += dname;
+ 			first += "::";
+		}
+		first += n->nameAt(0);
+
+		if (withEnumNS_) {
+			last += "::";
+			last += n->nameAt(c-1);
+		}
+		last += n->nameAt(c-1);
 	}
   string type_guard = guard(dname);
   os_ << "#ifndef " << type_guard << "\n"
@@ -776,6 +809,7 @@ static const string OUT("output");
 static const string IN("input");
 static const string INCLUDE_PREFIX("include-prefix");
 static const string NO_UNION_TYPEDEF("no-union-typedef");
+static const string WITH_ENUM_NS("with-enum-namespaces");
 
 static string readGuard(const string& filename)
 {
@@ -807,6 +841,7 @@ int main(int argc, char** argv)
         ("include-prefix,p", po::value<string>()->default_value("avro"),
             "prefix for include headers, - for none, default: avro")
         ("no-union-typedef,U", "do not generate typedefs for unions in records")
+        ("with-enum-namespaces,E", "Add namespaces around each enum, same name as enum")
         ("namespace,n", po::value<string>(), "set namespace for generated code")
         ("input,i", po::value<string>(), "input file")
         ("output,o", po::value<string>(), "output file to generate");
@@ -826,6 +861,7 @@ int main(int argc, char** argv)
     string inf = vm.count(IN) > 0 ? vm[IN].as<string>() : string();
     string incPrefix = vm[INCLUDE_PREFIX].as<string>();
     bool noUnion = vm.count(NO_UNION_TYPEDEF) != 0;
+    bool withEnumNS = vm.count(WITH_ENUM_NS) != 0;
     if (incPrefix == "-") {
         incPrefix.clear();
     } else if (*incPrefix.rbegin() != '/') {
@@ -845,9 +881,9 @@ int main(int argc, char** argv)
         if (! outf.empty()) {
             string g = readGuard(outf);
             ofstream out(outf.c_str());
-            CodeGen(out, ns, inf, outf, g, incPrefix, noUnion).generate(schema);
+            CodeGen(out, ns, inf, outf, g, incPrefix, noUnion, withEnumNS).generate(schema);
         } else {
-            CodeGen(std::cout, ns, inf, outf, "", incPrefix, noUnion).
+            CodeGen(std::cout, ns, inf, outf, "", incPrefix, noUnion, withEnumNS).
                 generate(schema);
         }
         return 0;
